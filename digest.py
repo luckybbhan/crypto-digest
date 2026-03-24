@@ -35,6 +35,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 BINANCE_API  = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 BINANCE_URL  = "https://www.binance.com/en/support/announcement/"
+OKX_API      = "https://www.okx.com/v2/support/home/web"
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +68,34 @@ def fetch_binance() -> list[dict]:
         return articles
     except Exception as e:
         log.warning(f"Failed to fetch Binance: {e}")
+        return []
+
+
+def fetch_okx() -> list[dict]:
+    """Fetch OKX new listing announcements."""
+    LISTING_SLUGS = {"announcements-new-listings", "announcements-delistings"}
+    try:
+        r = httpx.get(OKX_API, params={"pageSize": 50}, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        notices = r.json()["data"]["notices"]
+        articles = []
+        for n in notices:
+            if n.get("sectionSlug") not in LISTING_SLUGS:
+                continue
+            ts = n.get("publishDate", 0) / 1000
+            published = datetime.fromtimestamp(ts, tz=timezone.utc)
+            title = n.get("title") or n["link"].split("/")[-1].replace("-", " ").title()
+            articles.append({
+                "source":    "OKX",
+                "title":     title,
+                "link":      f"https://www.okx.com{n['link']}",
+                "summary":   "",
+                "published": published,
+                "topics":    [],
+            })
+        return articles
+    except Exception as e:
+        log.warning(f"Failed to fetch OKX: {e}")
         return []
 
 
@@ -341,6 +370,12 @@ def main():
     binance = fetch_binance()
     log.info(f"    → {len(binance)} announcements")
     all_articles.extend(binance)
+
+    # Fetch OKX announcements
+    log.info("  Fetching OKX announcements…")
+    okx = fetch_okx()
+    log.info(f"    → {len(okx)} announcements")
+    all_articles.extend(okx)
 
     log.info(f"Total fetched: {len(all_articles)}")
 
