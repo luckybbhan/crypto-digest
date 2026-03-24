@@ -3,12 +3,14 @@ import re
 import time
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import feedparser
 import httpx
 
-from config import FEEDS, TOPICS, TOPIC_EMOJI, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID
+import json
+
+from config import FEEDS, TOPICS, TOPIC_EMOJI, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, DEEPSEEK_API_KEY
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,16 +70,69 @@ def _parse_date(entry) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Tag by topic
+# Tag by topic — DeepSeek LLM classification (batch), keyword fallback
 # ---------------------------------------------------------------------------
 
-def tag_article(article: dict) -> list[str]:
+TOPIC_NAMES = list(TOPICS.keys())
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+
+SYSTEM_PROMPT = f"""You are a crypto venture analyst. Classify each news article into exactly ONE topic from this list:
+{chr(10).join(f"- {t}" for t in TOPIC_NAMES)}
+
+Rules:
+- Return ONLY a JSON array, one object per article, in the same order as input.
+- Each object: {{"id": <number>, "topics": [<single topic name>]}}
+- Pick the MOST relevant topic. If truly irrelevant to all, use "General".
+- Do not explain anything, return only the JSON array."""
+
+
+def classify_batch(articles: list[dict]) -> list[list[str]]:
+    """Classify a batch of articles via DeepSeek. Returns list of topic lists."""
+    items = "\n".join(
+        f'{i+1}. Title: {a["title"]}\n   Summary: {a["summary"]}'
+        for i, a in enumerate(articles)
+    )
+    try:
+        r = httpx.post(
+            DEEPSEEK_URL,
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": items},
+                ],
+                "temperature": 0,
+                "max_tokens": 1024,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"].strip()
+        # Strip markdown code fences if present
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
+        results = json.loads(content)
+        return [item["topics"] or ["General"] for item in sorted(results, key=lambda x: x["id"])]
+    except Exception as e:
+        log.warning(f"DeepSeek classification failed: {e} — falling back to keywords")
+        return [_keyword_tag(a) for a in articles]
+
+
+def _keyword_tag(article: dict) -> list[str]:
     text = (article["title"] + " " + article["summary"]).lower()
-    matched = [
-        topic for topic, keywords in TOPICS.items()
-        if any(kw in text for kw in keywords)
-    ]
+    matched = [t for t, kws in TOPICS.items() if any(kw in text for kw in kws)]
     return matched or ["General"]
+
+
+def tag_all_articles(articles: list[dict], batch_size: int = 20) -> None:
+    """Classify all articles in batches, assign topics in-place."""
+    log.info(f"  Classifying {len(articles)} articles with DeepSeek…")
+    for i in range(0, len(articles), batch_size):
+        batch = articles[i:i + batch_size]
+        results = classify_batch(batch)
+        for article, topics in zip(batch, results):
+            article["topics"] = topics
+        log.info(f"  Classified {min(i + batch_size, len(articles))}/{len(articles)}")
 
 
 # ---------------------------------------------------------------------------
@@ -198,14 +253,19 @@ def main():
 
     log.info(f"Total fetched: {len(all_articles)}")
 
+    # Filter to last 24 hours
+    cutoff = now - timedelta(hours=24)
+    all_articles = [a for a in all_articles if a["published"] >= cutoff]
+    log.info(f"After 24h filter: {len(all_articles)}")
+
     # Deduplicate
     all_articles = deduplicate(all_articles)
     log.info(f"After dedup: {len(all_articles)}")
 
-    # Tag by topic
+    # Tag by topic via DeepSeek
+    tag_all_articles(all_articles)
     by_topic = defaultdict(list)
     for a in all_articles:
-        a["topics"] = tag_article(a)
         for t in a["topics"]:
             by_topic[t].append(a)
 
