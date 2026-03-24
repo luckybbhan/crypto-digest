@@ -12,6 +12,15 @@ import json
 
 from config import FEEDS, TOPICS, TOPIC_EMOJI, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, DEEPSEEK_API_KEY
 
+# Portfolio company names for the system prompt context
+PORTFOLIO_NAMES = [
+    "Mavrick", "Cetus", "Ola", "Gravity", "Polyhedra", "Redbrick", "BBox", "Apriori",
+    "Ethena", "Cyber Games Arena", "Solv", "Movement", "Sidekick", "Hologram AI",
+    "Le Poker", "GAIB", "Tonark", "Sonic", "Sonex", "GTE", "Haedal", "Kaiju", "YB",
+    "Gamer Boom", "CAP", "Perena", "Aspecta", "RateX", "Nunchi", "Noise", "Turtle",
+    "EchoX", "Spout", "Stormbit",
+]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -79,10 +88,15 @@ DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 SYSTEM_PROMPT = f"""You are a crypto venture analyst. Classify each news article into exactly ONE topic from this list:
 {chr(10).join(f"- {t}" for t in TOPIC_NAMES)}
 
+Portfolio companies to watch (classify as "Portfolio" if the article is primarily about one of these):
+{", ".join(PORTFOLIO_NAMES)}
+
 Rules:
 - Return ONLY a JSON array, one object per article, in the same order as input.
 - Each object: {{"id": <number>, "topics": [<single topic name>]}}
-- Pick the MOST relevant topic. If truly irrelevant to all, use "General".
+- Pick the MOST relevant topic. Prioritize "Portfolio" if the article is about one of the portfolio companies above.
+- Use "Exchange Listings" for new token listing announcements on major exchanges.
+- If truly irrelevant to all, use "General".
 - Do not explain anything, return only the JSON array."""
 
 
@@ -328,8 +342,10 @@ def main():
     post_telegram(header)
     time.sleep(2)
 
-    # Send one section per topic (ordered)
-    topic_order = list(TOPICS.keys()) + ["General"]
+    # Send one section per topic (Portfolio + Exchange Listings first)
+    priority = ["Portfolio", "Exchange Listings"]
+    rest = [t for t in TOPICS.keys() if t not in priority]
+    topic_order = priority + rest + ["General"]
     for topic in topic_order:
         if topic not in by_topic:
             continue
