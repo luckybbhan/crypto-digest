@@ -36,6 +36,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 BINANCE_API  = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 BINANCE_URL  = "https://www.binance.com/en/support/announcement/"
 OKX_API      = "https://www.okx.com/v2/support/home/web"
+BYBIT_API    = "https://api.bybit.com/v5/announcements/index"
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,35 @@ def fetch_okx() -> list[dict]:
         return articles
     except Exception as e:
         log.warning(f"Failed to fetch OKX: {e}")
+        return []
+
+
+def fetch_bybit() -> list[dict]:
+    """Fetch Bybit new listing announcements."""
+    try:
+        r = httpx.get(
+            BYBIT_API,
+            params={"locale": "en-US", "type": "new_crypto", "page": 1, "limit": 20},
+            headers=HEADERS,
+            timeout=15,
+        )
+        r.raise_for_status()
+        items = r.json()["result"]["list"]
+        articles = []
+        for a in items:
+            ts = a.get("publishTime", 0) / 1000
+            published = datetime.fromtimestamp(ts, tz=timezone.utc)
+            articles.append({
+                "source":    "Bybit",
+                "title":     a.get("title", "").strip(),
+                "link":      a.get("url", "https://announcements.bybit.com"),
+                "summary":   a.get("description", ""),
+                "published": published,
+                "topics":    [],
+            })
+        return articles
+    except Exception as e:
+        log.warning(f"Failed to fetch Bybit: {e}")
         return []
 
 
@@ -376,6 +406,12 @@ def main():
     okx = fetch_okx()
     log.info(f"    → {len(okx)} announcements")
     all_articles.extend(okx)
+
+    # Fetch Bybit announcements
+    log.info("  Fetching Bybit announcements…")
+    bybit = fetch_bybit()
+    log.info(f"    → {len(bybit)} announcements")
+    all_articles.extend(bybit)
 
     log.info(f"Total fetched: {len(all_articles)}")
 
