@@ -31,13 +31,44 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+BINANCE_API  = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
+BINANCE_URL  = "https://www.binance.com/en/support/announcement/"
 
 
 # ---------------------------------------------------------------------------
 # Fetch
 # ---------------------------------------------------------------------------
+
+def fetch_binance() -> list[dict]:
+    """Fetch Binance new listing announcements via their internal API."""
+    try:
+        r = httpx.get(
+            BINANCE_API,
+            params={"type": 1, "pageNo": 1, "pageSize": 20, "catalogId": 48},
+            headers=HEADERS,
+            timeout=15,
+        )
+        r.raise_for_status()
+        articles_raw = r.json()["data"]["catalogs"][0]["articles"]
+        articles = []
+        for a in articles_raw:
+            ts = a.get("releaseDate", 0) / 1000  # ms → seconds
+            published = datetime.fromtimestamp(ts, tz=timezone.utc)
+            articles.append({
+                "source":    "Binance",
+                "title":     a.get("title", "").strip(),
+                "link":      f"{BINANCE_URL}{a.get('code', '')}",
+                "summary":   "",
+                "published": published,
+                "topics":    [],
+            })
+        return articles
+    except Exception as e:
+        log.warning(f"Failed to fetch Binance: {e}")
+        return []
+
 
 def fetch_feed(feed: dict) -> list[dict]:
     try:
@@ -304,6 +335,12 @@ def main():
         articles = fetch_feed(feed)
         log.info(f"    → {len(articles)} articles")
         all_articles.extend(articles)
+
+    # Fetch Binance announcements
+    log.info("  Fetching Binance announcements…")
+    binance = fetch_binance()
+    log.info(f"    → {len(binance)} announcements")
+    all_articles.extend(binance)
 
     log.info(f"Total fetched: {len(all_articles)}")
 
