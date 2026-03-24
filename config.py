@@ -1,5 +1,5 @@
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
-TELEGRAM_CHANNEL_ID = "@your_channel"  # or numeric ID like -100xxxxxxxxx
+TELEGRAM_BOT_TOKEN = "8382725878:AAGqb-IwoPxSThcmSvo1AhoV7DfNXqecjGY"
+TELEGRAM_CHANNEL_ID = "-1003723061243"
 
 FEEDS = [
     {"name": "CoinDesk",      "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
@@ -7,8 +7,8 @@ FEEDS = [
     {"name": "The Block",     "url": "https://www.theblock.co/rss.xml"},
     {"name": "Decrypt",       "url": "https://decrypt.co/feed"},
     {"name": "Blockworks",    "url": "https://blockworks.co/feed"},
-    {"name": "Reuters",       "url": "https://feeds.reuters.com/reuters/businessNews"},
-    {"name": "FT",            "url": "https://www.ft.com/rss/home"},
+    {"name": "Reuters",       "url": "https://feeds.reuters.com/reuters/technologyNews"},
+    {"name": "Investing.com", "url": "https://www.investing.com/rss/news_301.rss"},
 ]
 
 TOPICS = {

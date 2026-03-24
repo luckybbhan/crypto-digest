@@ -153,23 +153,31 @@ def render_topic_section(topic: str, articles: list[dict]) -> list[str]:
 # Post to Telegram
 # ---------------------------------------------------------------------------
 
-def post_telegram(text: str) -> bool:
-    try:
-        r = httpx.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={
-                "chat_id":    TELEGRAM_CHANNEL_ID,
-                "text":       text,
-                "parse_mode": "MarkdownV2",
-                "disable_web_page_preview": True,
-            },
-            timeout=15,
-        )
-        r.raise_for_status()
-        return True
-    except Exception as e:
-        log.error(f"Telegram post failed: {e}")
-        return False
+def post_telegram(text: str, retries: int = 3) -> bool:
+    for attempt in range(retries):
+        try:
+            r = httpx.post(
+                f"{TELEGRAM_API}/sendMessage",
+                json={
+                    "chat_id":    TELEGRAM_CHANNEL_ID,
+                    "text":       text,
+                    "parse_mode": "MarkdownV2",
+                    "disable_web_page_preview": True,
+                },
+                timeout=15,
+            )
+            if r.status_code == 429:
+                retry_after = r.json().get("parameters", {}).get("retry_after", 10)
+                log.warning(f"Rate limited — waiting {retry_after}s")
+                time.sleep(retry_after)
+                continue
+            r.raise_for_status()
+            return True
+        except Exception as e:
+            log.error(f"Telegram post failed (attempt {attempt + 1}): {e}")
+            if attempt < retries - 1:
+                time.sleep(5)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +222,7 @@ def main():
     # Send header
     header = render_header(now, len(all_articles), len(FEEDS))
     post_telegram(header)
-    time.sleep(0.5)
+    time.sleep(2)
 
     # Send one section per topic (ordered)
     topic_order = list(TOPICS.keys()) + ["General"]
@@ -225,7 +233,7 @@ def main():
             success = post_telegram(msg)
             if success:
                 log.info(f"  Posted: {topic}")
-            time.sleep(0.5)  # avoid Telegram rate limits
+            time.sleep(2)  # avoid Telegram rate limits
 
     log.info("Done.")
 
