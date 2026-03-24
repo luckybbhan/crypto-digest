@@ -136,7 +136,7 @@ def tag_all_articles(articles: list[dict], batch_size: int = 20) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Deduplicate
+# Deduplicate — exact matches
 # ---------------------------------------------------------------------------
 
 def deduplicate(articles: list[dict]) -> list[dict]:
@@ -152,6 +152,46 @@ def deduplicate(articles: list[dict]) -> list[dict]:
         seen_titles.add(title_key)
         unique.append(a)
     return unique
+
+
+# ---------------------------------------------------------------------------
+# Cluster same-story articles across sources — keep best source
+# ---------------------------------------------------------------------------
+
+SOURCE_PRIORITY = ["The Block", "CoinDesk", "Cointelegraph", "Blockworks", "Decrypt", "Investing.com", "Reuters"]
+STOPWORDS = {"the","a","an","in","on","at","to","for","of","and","or","is","as","by","with",
+             "after","over","from","its","into","that","this","it","are","was","be","has","have"}
+
+def _title_words(title: str) -> set:
+    return set(re.sub(r"[^a-z0-9 ]", "", title.lower()).split()) - STOPWORDS
+
+def _jaccard(s1: set, s2: set) -> float:
+    if not s1 or not s2:
+        return 0.0
+    return len(s1 & s2) / len(s1 | s2)
+
+def cluster_stories(articles: list[dict], threshold: float = 0.3) -> list[dict]:
+    """
+    Group articles about the same story, keep one per group.
+    Within a group, prefer higher-priority sources.
+    """
+    kept = []
+    for article in articles:
+        words = _title_words(article["title"])
+        matched = None
+        for i, existing in enumerate(kept):
+            if _jaccard(words, _title_words(existing["title"])) >= threshold:
+                matched = i
+                break
+        if matched is None:
+            kept.append(article)
+        else:
+            # Replace existing if current article is from a higher-priority source
+            cur_pri = SOURCE_PRIORITY.index(article["source"]) if article["source"] in SOURCE_PRIORITY else 99
+            ex_pri  = SOURCE_PRIORITY.index(kept[matched]["source"]) if kept[matched]["source"] in SOURCE_PRIORITY else 99
+            if cur_pri < ex_pri:
+                kept[matched] = article
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +298,13 @@ def main():
     all_articles = [a for a in all_articles if a["published"] >= cutoff]
     log.info(f"After 24h filter: {len(all_articles)}")
 
-    # Deduplicate
+    # Deduplicate exact matches
     all_articles = deduplicate(all_articles)
     log.info(f"After dedup: {len(all_articles)}")
+
+    # Cluster same-story articles across sources
+    all_articles = cluster_stories(all_articles)
+    log.info(f"After story clustering: {len(all_articles)}")
 
     # Tag by topic via DeepSeek
     tag_all_articles(all_articles)
