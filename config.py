@@ -1,18 +1,68 @@
-TELEGRAM_BOT_TOKEN = "8382725878:AAGqb-IwoPxSThcmSvo1AhoV7DfNXqecjGY"
-TELEGRAM_CHANNEL_ID = "-1003723061243"
+import os
+from pathlib import Path
 
-DEEPSEEK_API_KEY = "sk-9a0e263cdd8e4883b8ae6ae501260c59"
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Small .env loader so the server can run without extra dependencies."""
+    env_path = Path(__file__).resolve().parent / path
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "-1003723061243")
+
+# Group with topics
+TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "-1003510224043")
+
+# Test group (no topics/threads)
+TEST_GROUP_ID = os.getenv("TEST_GROUP_ID", "-5270638639")
+
+# Telegraph
+TELEGRAPH_TOKEN = os.getenv("TELEGRAPH_TOKEN", "")
+TOPIC_THREAD_IDS = {
+    "Portfolio":             4,
+    "Exchange Listings":     6,
+    "Deal Flow & Funding":   7,
+    "RWA & Institutional":   8,
+    "DeFi & New Primitives": 9,
+    "Regulatory & Policy":   10,
+    "Macro & Market":        11,
+    # Infrastructure & Tech, Emerging Narratives, General → General thread (no thread_id)
+}
+
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+
+# Miniflux collector
+MINIFLUX_URL = os.getenv("MINIFLUX_URL", "http://localhost:8080")
+MINIFLUX_API_TOKEN = os.getenv("MINIFLUX_API_TOKEN", "")
+MINIFLUX_USERNAME = os.getenv("MINIFLUX_USERNAME", "")
+MINIFLUX_PASSWORD = os.getenv("MINIFLUX_PASSWORD", "")
 
 FEEDS = [
+    # English — Tier 1
     {"name": "CoinDesk",      "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
     {"name": "Cointelegraph", "url": "https://cointelegraph.com/rss"},
     {"name": "The Block",     "url": "https://www.theblock.co/rss.xml"},
     {"name": "Decrypt",       "url": "https://decrypt.co/feed"},
     {"name": "Blockworks",    "url": "https://blockworks.co/feed"},
-    {"name": "Reuters",       "url": "https://feeds.reuters.com/reuters/technologyNews"},
+    {"name": "The Defiant",   "url": "https://thedefiant.io/feed"},
+    # English — Tier 2
+    {"name": "Forkast",       "url": "https://forkast.news/feed/"},
+    {"name": "CryptoSlate",   "url": "https://cryptoslate.com/feed/"},
     {"name": "Investing.com", "url": "https://www.investing.com/rss/news_301.rss"},
-    # Exchange announcement feeds
-    {"name": "Coinbase Blog", "url": "https://blog.coinbase.com/feed"},
+    # Chinese
+    {"name": "Wu Blockchain", "url": "https://wublock.substack.com/feed"},
+    {"name": "PANews",        "url": "https://www.panewslab.com/rss.xml"},
 ]
 
 TOPICS = {

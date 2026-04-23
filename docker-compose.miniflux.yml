@@ -1,0 +1,38 @@
+services:
+  miniflux:
+    image: miniflux/miniflux:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://miniflux:${MINIFLUX_POSTGRES_PASSWORD:-miniflux_secret}@postgres/miniflux?sslmode=disable
+      RUN_MIGRATIONS: "1"
+      CREATE_ADMIN: "1"
+      ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD:-change-me}
+      POLLING_FREQUENCY: ${MINIFLUX_POLLING_FREQUENCY:-30}
+      POLLING_SCHEDULER: entry_frequency
+      SCHEDULER_ENTRY_FREQUENCY_MIN_INTERVAL: ${MINIFLUX_MIN_INTERVAL:-15}
+      SCHEDULER_ENTRY_FREQUENCY_MAX_INTERVAL: ${MINIFLUX_MAX_INTERVAL:-1440}
+    healthcheck:
+      test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
+      interval: 10s
+      start_period: 30s
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: miniflux
+      POSTGRES_PASSWORD: ${MINIFLUX_POSTGRES_PASSWORD:-miniflux_secret}
+      POSTGRES_DB: miniflux
+    volumes:
+      - miniflux-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "miniflux"]
+      interval: 10s
+      start_period: 30s
+
+volumes:
+  miniflux-db:

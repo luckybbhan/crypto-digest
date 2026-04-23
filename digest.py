@@ -1,16 +1,23 @@
+import argparse
 import hashlib
+import json
+import os
 import re
 import time
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+TZ_CST = timezone(timedelta(hours=8))
+from html.parser import HTMLParser
+
 import feedparser
 import httpx
 
-import json
-
-from config import FEEDS, TOPICS, TOPIC_EMOJI, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, DEEPSEEK_API_KEY
+from config import FEEDS, TOPICS, TOPIC_EMOJI, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, DEEPSEEK_API_KEY, TELEGRAM_GROUP_ID, TOPIC_THREAD_IDS, TEST_GROUP_ID, TELEGRAPH_TOKEN
+from miniflux_client import fetch_miniflux_articles
 
 # Portfolio company names for the system prompt context
 PORTFOLIO_NAMES = [
@@ -26,7 +33,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("logs/digest.log"),
+        logging.FileHandler(os.path.join(BASE_DIR, "logs", "digest.log")),
     ],
 )
 log = logging.getLogger(__name__)
@@ -35,7 +42,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 BINANCE_API  = "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
 BINANCE_URL  = "https://www.binance.com/en/support/announcement/"
-OKX_API      = "https://www.okx.com/v2/support/home/web"
+OKX_URL      = "https://www.okx.com/en-us/help/section/announcements-new-listings"
 BYBIT_API    = "https://api.bybit.com/v5/announcements/index"
 
 
@@ -73,23 +80,24 @@ def fetch_binance() -> list[dict]:
 
 
 def fetch_okx() -> list[dict]:
-    """Fetch OKX new listing announcements."""
-    LISTING_SLUGS = {"announcements-new-listings", "announcements-delistings"}
+    """Fetch OKX global new listing announcements (en-us help center page)."""
     try:
-        r = httpx.get(OKX_API, params={"pageSize": 50}, headers=HEADERS, timeout=15)
+        r = httpx.get(OKX_URL, headers=HEADERS, timeout=20)
         r.raise_for_status()
-        notices = r.json()["data"]["notices"]
+        # Extract embedded JSON from <script id="appState">
+        start = r.text.find('id="appState">') + len('id="appState">')
+        end = r.text.find("</script>", start)
+        data = json.loads(r.text[start:end])
+        article_list = data["appContext"]["initialProps"]["sectionData"]["articleList"]["list"]
         articles = []
-        for n in notices:
-            if n.get("sectionSlug") not in LISTING_SLUGS:
-                continue
-            ts = n.get("publishDate", 0) / 1000
+        for a in article_list:
+            ts = a.get("publishTime", 0) / 1000
             published = datetime.fromtimestamp(ts, tz=timezone.utc)
-            title = n.get("title") or n["link"].split("/")[-1].replace("-", " ").title()
+            slug = a.get("slug", "")
             articles.append({
                 "source":    "OKX",
-                "title":     title,
-                "link":      f"https://www.okx.com{n['link']}",
+                "title":     a.get("title", "").strip(),
+                "link":      f"https://www.okx.com/en-us/help/{slug}",
                 "summary":   "",
                 "published": published,
                 "topics":    [],
@@ -178,13 +186,14 @@ DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 SYSTEM_PROMPT = f"""You are a crypto venture analyst. Classify each news article into exactly ONE topic from this list:
 {chr(10).join(f"- {t}" for t in TOPIC_NAMES)}
 
-Portfolio companies to watch (classify as "Portfolio" if the article is primarily about one of these):
+Portfolio companies (ONLY classify as "Portfolio" if the article explicitly names one of these companies):
 {", ".join(PORTFOLIO_NAMES)}
 
 Rules:
 - Return ONLY a JSON array, one object per article, in the same order as input.
 - Each object: {{"id": <number>, "topics": [<single topic name>]}}
-- Pick the MOST relevant topic. Prioritize "Portfolio" if the article is about one of the portfolio companies above.
+- Pick the MOST relevant topic.
+- Use "Portfolio" ONLY if the article explicitly mentions one of the listed portfolio company names above. Do NOT use "Portfolio" for any other company.
 - Use "Exchange Listings" for new token listing announcements on major exchanges.
 - If truly irrelevant to all, use "General".
 - Do not explain anything, return only the JSON array."""
@@ -192,6 +201,10 @@ Rules:
 
 def classify_batch(articles: list[dict]) -> list[list[str]]:
     """Classify a batch of articles via DeepSeek. Returns list of topic lists."""
+    if not DEEPSEEK_API_KEY:
+        log.warning("DEEPSEEK_API_KEY not configured — falling back to keyword classification")
+        return [_keyword_tag(a) for a in articles]
+
     items = "\n".join(
         f'{i+1}. Title: {a["title"]}\n   Summary: {a["summary"]}'
         for i, a in enumerate(articles)
@@ -262,7 +275,7 @@ def deduplicate(articles: list[dict]) -> list[dict]:
 # Cluster same-story articles across sources — keep best source
 # ---------------------------------------------------------------------------
 
-SOURCE_PRIORITY = ["The Block", "CoinDesk", "Cointelegraph", "Blockworks", "Decrypt", "Investing.com", "Reuters"]
+SOURCE_PRIORITY = ["The Block", "CoinDesk", "Cointelegraph", "Blockworks", "The Defiant", "Decrypt", "Forkast", "CryptoSlate", "Wu Blockchain", "PANews", "Investing.com"]
 STOPWORDS = {"the","a","an","in","on","at","to","for","of","and","or","is","as","by","with",
              "after","over","from","its","into","that","this","it","are","was","be","has","have"}
 
@@ -299,17 +312,62 @@ def cluster_stories(articles: list[dict], threshold: float = 0.3) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Summarise a topic's articles via DeepSeek
+# ---------------------------------------------------------------------------
+
+def summarize_topic(topic: str, articles: list[dict]) -> str:
+    """Return a short bullet-point summary of the key takeaways for a topic."""
+    if not DEEPSEEK_API_KEY:
+        log.warning(f"DEEPSEEK_API_KEY not configured — skipping summary for {topic}")
+        return ""
+
+    items = "\n".join(
+        f"- {a['title']}: {a['summary']}" for a in articles
+    )
+    prompt = (
+        f"Summarise the {topic} news below in 3-5 bullet points.\n"
+        f"Rules:\n"
+        f"- State only facts — what happened, who did what, what amount\n"
+        f"- No analysis, no opinion, no commentary\n"
+        f"- Each bullet: one line, max 15 words\n"
+        f"- Start each with a bold keyword e.g. *Monad:* or *Binance:*\n"
+        f"- Use plain bullet character •\n\n"
+        f"{items}"
+    )
+    try:
+        r = httpx.post(
+            DEEPSEEK_URL,
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_tokens": 400,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        summary = r.json()["choices"][0]["message"]["content"].strip()
+        bullets = "\n\n".join(line for line in summary.splitlines() if line.strip())
+        return f"─────────────\n📝 *Key Takeaways*\n\n{bullets}"
+    except Exception as e:
+        log.warning(f"Summary failed for {topic}: {e}")
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Render Telegram messages
 # ---------------------------------------------------------------------------
 
 def _escape(text: str) -> str:
-    """Escape special chars for Telegram MarkdownV2."""
-    return re.sub(r"([_*\[\]()~`>#+\-=|{}.!\\])", r"\\\1", text)
+    """Escape special chars for Telegram Markdown (legacy mode)."""
+    return re.sub(r"([_*`\[])", r"\\\1", text)
 
 
 def render_header(now: datetime, total: int, sources: int) -> str:
-    date_str = _escape(now.strftime("%b %d, %Y"))
-    time_str = _escape(now.strftime("%H:%M UTC"))
+    now_cst = now.astimezone(TZ_CST)
+    date_str = now_cst.strftime("%b %d, %Y")
+    time_str = now_cst.strftime("%H:%M UTC+8")
     return (
         f"📰 *Crypto Daily Digest — {date_str}*\n"
         f"_{sources} sources · {total} articles · {time_str}_"
@@ -322,13 +380,13 @@ def render_topic_section(topic: str, articles: list[dict]) -> list[str]:
     Each string is ≤4096 chars (Telegram's limit).
     """
     emoji = TOPIC_EMOJI.get(topic, "📌")
-    header = f"{emoji} *{_escape(topic)}*  \\({len(articles)} articles\\)\n"
+    header = f"{emoji} *{_escape(topic)}*  ({len(articles)} articles)\n"
 
     messages = []
     current = header
 
     for a in sorted(articles, key=lambda x: x["published"], reverse=True):
-        pub = _escape(a["published"].strftime("%b %d, %H:%M UTC"))
+        pub = a["published"].astimezone(TZ_CST).strftime("%b %d, %H:%M UTC+8")
         source = _escape(a["source"])
         title = _escape(a["title"])
         summary = _escape(a["summary"]) if a["summary"] else "_No summary_"
@@ -338,7 +396,7 @@ def render_topic_section(topic: str, articles: list[dict]) -> list[str]:
 
         if len(current) + len(block) > 4000:
             messages.append(current)
-            current = f"{emoji} *{_escape(topic)}* \\(cont\\.\\)\n" + block
+            current = f"{emoji} *{_escape(topic)}* (cont.)\n" + block
         else:
             current += block
 
@@ -352,17 +410,35 @@ def render_topic_section(topic: str, articles: list[dict]) -> list[str]:
 # Post to Telegram
 # ---------------------------------------------------------------------------
 
-def post_telegram(text: str, retries: int = 3) -> bool:
+def post_telegram(
+    text: str,
+    thread_id: int = None,
+    chat_id: str = None,
+    retries: int = 3,
+    dry_run: bool = False,
+) -> bool:
+    if dry_run:
+        preview = text.replace("\n", " ")[:180]
+        log.info(f"[dry-run] Telegram → chat {chat_id or TELEGRAM_GROUP_ID}, thread {thread_id or 'none'}: {preview}")
+        return True
+
+    if not TELEGRAM_BOT_TOKEN:
+        log.error("TELEGRAM_BOT_TOKEN not configured — cannot post to Telegram")
+        return False
+
     for attempt in range(retries):
         try:
+            payload = {
+                "chat_id":    chat_id or TELEGRAM_GROUP_ID,
+                "text":       text,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }
+            if thread_id:
+                payload["message_thread_id"] = thread_id
             r = httpx.post(
                 f"{TELEGRAM_API}/sendMessage",
-                json={
-                    "chat_id":    TELEGRAM_CHANNEL_ID,
-                    "text":       text,
-                    "parse_mode": "MarkdownV2",
-                    "disable_web_page_preview": True,
-                },
+                json=payload,
                 timeout=15,
             )
             if r.status_code == 429:
@@ -380,38 +456,201 @@ def post_telegram(text: str, retries: int = 3) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Telegraph
+# ---------------------------------------------------------------------------
+
+TELEGRAPH_API = "https://api.telegra.ph"
+
+VOID_TAGS = {"br", "hr", "img"}
+
+
+class _NodeBuilder(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.root = []
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = {"tag": tag}
+        allowed_attrs = {k: v for k, v in attrs if k in ("href", "src")}
+        if allowed_attrs:
+            node["attrs"] = allowed_attrs
+        if tag not in VOID_TAGS:
+            node["children"] = []
+            self.stack[-1].append(node)
+            self.stack.append(node["children"])
+        else:
+            self.stack[-1].append(node)
+
+    def handle_endtag(self, tag):
+        if tag not in VOID_TAGS:
+            self.stack.pop()
+
+    def handle_data(self, data):
+        if data:
+            self.stack[-1].append(data)
+
+
+def _html_to_nodes(html: str) -> list:
+    builder = _NodeBuilder()
+    builder.feed(html)
+    return _clean_nodes(builder.root)
+
+
+def _clean_nodes(nodes: list) -> list:
+    result = []
+    for node in nodes:
+        if isinstance(node, str):
+            if node.strip():
+                result.append(node)
+        elif isinstance(node, dict):
+            cleaned = {"tag": node["tag"]}
+            if node.get("attrs"):
+                cleaned["attrs"] = node["attrs"]
+            children = _clean_nodes(node.get("children", []))
+            if children:
+                cleaned["children"] = children
+            result.append(cleaned)
+    return result
+
+
+def get_telegraph_token() -> str:
+    if TELEGRAPH_TOKEN:
+        return TELEGRAPH_TOKEN
+    r = httpx.post(f"{TELEGRAPH_API}/createAccount", json={
+        "short_name": "CryptoDigest",
+        "author_name": "2Square Capital",
+    }, timeout=15)
+    token = r.json()["result"]["access_token"]
+    log.info(f"Created Telegraph token: {token}")
+    log.info("Save this to config.py as TELEGRAPH_TOKEN to reuse your account")
+    return token
+
+
+def _build_topic_html(topic: str, articles: list, summaries: dict) -> str:
+    emoji = TOPIC_EMOJI.get(topic, "📌")
+    html = f"<h3>{emoji} {topic} ({len(articles)})</h3>"
+    for a in sorted(articles, key=lambda x: x["published"], reverse=True):
+        pub = a["published"].astimezone(TZ_CST).strftime("%b %d, %H:%M UTC+8")
+        summary = a["summary"] if a["summary"] else ""
+        html += f'<p><a href="{a["link"]}"><strong>{a["title"]}</strong></a><br><em>{a["source"]} · {pub}</em>'
+        if summary:
+            html += f"<br>{summary}"
+        html += "</p>"
+    if topic in summaries:
+        bullets = re.sub(r"^─+\n📝 \*Key Takeaways\*\n\n", "", summaries[topic]).strip()
+        html += f"<blockquote>{bullets.replace(chr(10), '<br>')}</blockquote>"
+    html += "<hr>"
+    return html
+
+
+def publish_telegraph_pages(by_topic: dict, topic_order: list, summaries: dict, now: datetime, token: str) -> list[str]:
+    """Pack topics into Telegraph pages (under 64KB JSON), return list of URLs."""
+    MAX_BYTES = 60_000  # measured on JSON-serialized nodes
+    date_str = now.strftime("%b %d, %Y")
+    time_str = now.astimezone(TZ_CST).strftime("%H:%M UTC+8")
+    n_sources = len(set(a["source"] for t in by_topic.values() for a in t))
+    n_articles = sum(len(v) for v in by_topic.values())
+    header_nodes = _html_to_nodes(f"<p><em>{n_sources} sources · {n_articles} articles · {time_str}</em></p>")
+
+    pages_nodes = []
+    current_nodes = list(header_nodes)
+
+    for topic in topic_order:
+        if topic not in by_topic:
+            continue
+        chunk_nodes = _html_to_nodes(_build_topic_html(topic, by_topic[topic], summaries))
+        candidate = current_nodes + chunk_nodes
+        # Use ensure_ascii=True to match actual HTTP payload size
+        if len(json.dumps(candidate).encode("utf-8")) > MAX_BYTES and len(current_nodes) > len(header_nodes):
+            pages_nodes.append(current_nodes)
+            current_nodes = list(header_nodes) + chunk_nodes
+        else:
+            current_nodes = candidate
+
+    if len(current_nodes) > len(header_nodes):
+        pages_nodes.append(current_nodes)
+
+    total = len(pages_nodes)
+    urls = []
+    for i, nodes in enumerate(pages_nodes):
+        title = f"Crypto Daily Digest — {date_str}" + (f" ({i+1}/{total})" if total > 1 else "")
+        # Serialize with ensure_ascii=False to keep emoji compact, reducing actual payload size
+        body = json.dumps({"access_token": token, "title": title, "content": nodes, "return_content": False}, ensure_ascii=False).encode("utf-8")
+        r = httpx.post(f"{TELEGRAPH_API}/createPage", content=body, headers={"Content-Type": "application/json"}, timeout=30)
+        data = r.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"Telegraph error: {data.get('error')}")
+        urls.append(data["result"]["url"])
+        log.info(f"Telegraph page {i+1}/{total}: {urls[-1]}")
+
+    return urls
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
-    now = datetime.now(timezone.utc)
-    log.info(f"Starting digest — {now.strftime('%Y-%m-%d %H:%M UTC')}")
-
-    # Fetch all feeds
+def fetch_live_articles() -> list[dict]:
     all_articles = []
     for feed in FEEDS:
         log.info(f"  Fetching {feed['name']}…")
         articles = fetch_feed(feed)
         log.info(f"    → {len(articles)} articles")
         all_articles.extend(articles)
+    return all_articles
 
-    # Fetch Binance announcements
+
+def fetch_exchange_articles() -> list[dict]:
+    all_articles = []
+
     log.info("  Fetching Binance announcements…")
     binance = fetch_binance()
     log.info(f"    → {len(binance)} announcements")
     all_articles.extend(binance)
 
-    # Fetch OKX announcements
     log.info("  Fetching OKX announcements…")
     okx = fetch_okx()
     log.info(f"    → {len(okx)} announcements")
     all_articles.extend(okx)
 
-    # Fetch Bybit announcements
     log.info("  Fetching Bybit announcements…")
     bybit = fetch_bybit()
     log.info(f"    → {len(bybit)} announcements")
     all_articles.extend(bybit)
+
+    return all_articles
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prod", action="store_true", help="Send to production group")
+    parser.add_argument("--telegraph", action="store_true", help="Publish to Telegraph and post link")
+    parser.add_argument("--dry-run", action="store_true", help="Preview target/messages without posting")
+    parser.add_argument(
+        "--source",
+        choices=["live", "miniflux"],
+        default="live",
+        help="Use live RSS fetches or Miniflux history for RSS articles",
+    )
+    args = parser.parse_args()
+
+    target_group = TELEGRAM_GROUP_ID if args.prod else TEST_GROUP_ID
+    log.info(f"Target: {'PROD' if args.prod else 'TEST'} group ({target_group})")
+
+    now = datetime.now(timezone.utc)
+    log.info(f"Starting digest — {now.astimezone(TZ_CST).strftime('%Y-%m-%d %H:%M UTC+8')}")
+
+    all_articles = []
+    if args.source == "miniflux":
+        log.info("  Fetching RSS articles from Miniflux history…")
+        rss_articles = fetch_miniflux_articles(hours=24)
+        log.info(f"    → {len(rss_articles)} RSS articles")
+        all_articles.extend(rss_articles)
+    else:
+        all_articles.extend(fetch_live_articles())
+
+    all_articles.extend(fetch_exchange_articles())
 
     log.info(f"Total fetched: {len(all_articles)}")
 
@@ -427,6 +666,7 @@ def main():
     # Cluster same-story articles across sources
     all_articles = cluster_stories(all_articles)
     log.info(f"After story clustering: {len(all_articles)}")
+    source_count = len(set(a["source"] for a in all_articles))
 
     # Tag by topic via DeepSeek
     tag_all_articles(all_articles)
@@ -436,32 +676,67 @@ def main():
             by_topic[t].append(a)
 
     # Post to Telegram
-    if TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
+    if not TELEGRAM_BOT_TOKEN and not args.dry_run:
         log.warning("Telegram not configured — printing to stdout instead")
-        print(render_header(now, len(all_articles), len(FEEDS)))
+        print(render_header(now, len(all_articles), source_count))
         for topic, articles in by_topic.items():
             for msg in render_topic_section(topic, articles):
                 print("\n" + "─" * 60)
                 print(msg)
         return
 
-    # Send header
-    header = render_header(now, len(all_articles), len(FEEDS))
-    post_telegram(header)
-    time.sleep(2)
-
-    # Send one section per topic (Portfolio + Exchange Listings first)
     priority = ["Portfolio", "Exchange Listings"]
     rest = [t for t in TOPICS.keys() if t not in priority]
     topic_order = priority + rest + ["General"]
+
+    if args.telegraph:
+        # Generate all summaries first, then publish one Telegraph page
+        log.info("Generating summaries for Telegraph page…")
+        summaries = {}
+        for topic in topic_order:
+            if topic not in by_topic:
+                continue
+            summaries[topic] = summarize_topic(topic, by_topic[topic])
+            log.info(f"  Summary done: {topic}")
+
+        if args.dry_run:
+            urls = ["https://telegra.ph/dry-run-preview"]
+            log.info("[dry-run] Skipping Telegraph publish")
+        else:
+            token = get_telegraph_token()
+            urls = publish_telegraph_pages(by_topic, topic_order, summaries, now, token)
+
+        header = render_header(now, len(all_articles), source_count)
+        if len(urls) == 1:
+            links = f"📖 [Read full digest]({urls[0]})"
+        else:
+            links = "\n".join(f"📖 [Part {i+1}]({u})" for i, u in enumerate(urls))
+        post_telegram(f"{header}\n\n{links}", chat_id=target_group, dry_run=args.dry_run)
+        log.info("Done.")
+        return
+
+    # Default: send raw messages to Telegram
+    header = render_header(now, len(all_articles), source_count)
+    post_telegram(header, chat_id=target_group, dry_run=args.dry_run)
+    if not args.dry_run:
+        time.sleep(2)
+
     for topic in topic_order:
         if topic not in by_topic:
             continue
+        thread_id = TOPIC_THREAD_IDS.get(topic) if args.prod else None
         for msg in render_topic_section(topic, by_topic[topic]):
-            success = post_telegram(msg)
+            success = post_telegram(msg, thread_id=thread_id, chat_id=target_group, dry_run=args.dry_run)
             if success:
-                log.info(f"  Posted: {topic}")
-            time.sleep(2)  # avoid Telegram rate limits
+                log.info(f"  Posted: {topic} → thread {thread_id or 'General'}")
+            if not args.dry_run:
+                time.sleep(2)
+        summary = summarize_topic(topic, by_topic[topic])
+        if summary:
+            post_telegram(summary, thread_id=thread_id, chat_id=target_group, dry_run=args.dry_run)
+            log.info(f"  Summary posted: {topic}")
+            if not args.dry_run:
+                time.sleep(2)
 
     log.info("Done.")
 
