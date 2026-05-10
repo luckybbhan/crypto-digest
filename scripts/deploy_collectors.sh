@@ -9,6 +9,16 @@ echo "repo: $ROOT_DIR"
 
 mkdir -p logs data
 
+if docker ps >/dev/null 2>&1; then
+  DOCKER=(docker)
+elif sudo -n docker ps >/dev/null 2>&1; then
+  DOCKER=(sudo docker)
+else
+  echo "Docker is not accessible for this user."
+  echo "Try: sudo usermod -aG docker $(whoami), then log out/in; or run this script with sudo-capable access."
+  exit 1
+fi
+
 ensure_env() {
   local key="$1"
   local value="$2"
@@ -43,7 +53,7 @@ python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 
 echo "== starting Miniflux/RSSHub =="
-docker compose -f docker-compose.miniflux.yml up -d
+"${DOCKER[@]}" compose -f docker-compose.miniflux.yml up -d
 
 echo "== waiting for Miniflux API =="
 for i in {1..60}; do
@@ -69,19 +79,27 @@ echo "== collecting non-RSS history once =="
 python3 source_collector.py --hours 24
 
 echo "== installing collector cron =="
+begin_marker="# crypto-digest collectors begin"
+end_marker="# crypto-digest collectors end"
 collector_cmd="cd $ROOT_DIR && . .venv/bin/activate && python3 source_collector.py --hours 24 >> logs/source_collector.log 2>&1"
 refresh_cmd="cd $ROOT_DIR && . .venv/bin/activate && python3 miniflux_client.py --refresh >> logs/miniflux_refresh.log 2>&1"
 tmp_cron="$(mktemp)"
-crontab -l 2>/dev/null | grep -v "crypto-digest/source_collector.py" | grep -v "crypto-digest/miniflux_client.py --refresh" > "$tmp_cron" || true
+crontab -l 2>/dev/null | awk "
+  /^${begin_marker}$/ {skip=1; next}
+  /^${end_marker}$/ {skip=0; next}
+  !skip {print}
+" > "$tmp_cron" || true
 {
   cat "$tmp_cron"
+  printf '%s\n' "$begin_marker"
   printf '*/10 * * * * %s\n' "$collector_cmd"
   printf '5 * * * * %s\n' "$refresh_cmd"
+  printf '%s\n' "$end_marker"
 } | crontab -
 rm -f "$tmp_cron"
 
 echo "== current status =="
-docker compose -f docker-compose.miniflux.yml ps
+"${DOCKER[@]}" compose -f docker-compose.miniflux.yml ps
 python3 miniflux_client.py --check || true
 python3 source_history.py --hours 24 || true
 
