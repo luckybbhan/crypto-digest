@@ -1,4 +1,17 @@
 services:
+  rsshub:
+    image: diygod/rsshub:latest
+    ports:
+      - "127.0.0.1:1200:1200"
+    environment:
+      CACHE_EXPIRE: ${RSSHUB_CACHE_EXPIRE:-600}
+      REQUEST_RETRY: ${RSSHUB_REQUEST_RETRY:-2}
+      UA: ${RSSHUB_UA:-ForesightNews/1.0}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1200/healthz"]
+      interval: 30s
+      start_period: 30s
+
   miniflux:
     image: miniflux/miniflux:latest
     depends_on:

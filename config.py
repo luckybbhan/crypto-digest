@@ -37,7 +37,45 @@ TOPIC_THREAD_IDS = {
     "DeFi & New Primitives": 9,
     "Regulatory & Policy":   10,
     "Macro & Market":        11,
-    # Infrastructure & Tech, Emerging Narratives, General → General thread (no thread_id)
+    # General → General thread (no thread_id)
+}
+
+# Internal taxonomy can be more granular than the Telegram forum topics.
+# This map keeps the analysis categories intact while routing posts to the
+# existing forum structure.
+TOPIC_TELEGRAM_ROUTE = {
+    "Portfolio": "Portfolio",
+    "Exchange Listings": "Exchange Listings",
+    "Deal Flow & Funding": "Deal Flow & Funding",
+    "RWA & Institutional": "RWA & Institutional",
+    "DeFi & New Primitives": "DeFi & New Primitives",
+    "Regulatory & Policy": "Regulatory & Policy",
+    "Macro & Market": "Macro & Market",
+    "Security & Exploits": "DeFi & New Primitives",
+    "Stablecoins & Payments": "RWA & Institutional",
+    "Governance & Protocol Updates": "DeFi & New Primitives",
+    "Market Structure": "Macro & Market",
+    "Infrastructure & Tech": "DeFi & New Primitives",
+    "Emerging Narratives": "General",
+    "General": "General",
+}
+
+TELEGRAM_DEFAULT_TOPIC_LIMIT = int(os.getenv("TELEGRAM_DEFAULT_TOPIC_LIMIT", "10"))
+TELEGRAM_TOPIC_LIMITS = {
+    "Portfolio": int(os.getenv("TELEGRAM_LIMIT_PORTFOLIO", "20")),
+    "Exchange Listings": int(os.getenv("TELEGRAM_LIMIT_EXCHANGE_LISTINGS", "20")),
+    "Deal Flow & Funding": int(os.getenv("TELEGRAM_LIMIT_DEAL_FLOW", "12")),
+    "RWA & Institutional": int(os.getenv("TELEGRAM_LIMIT_RWA", "12")),
+    "Stablecoins & Payments": int(os.getenv("TELEGRAM_LIMIT_STABLECOINS", "10")),
+    "DeFi & New Primitives": int(os.getenv("TELEGRAM_LIMIT_DEFI", "12")),
+    "Security & Exploits": int(os.getenv("TELEGRAM_LIMIT_SECURITY", "10")),
+    "Governance & Protocol Updates": int(os.getenv("TELEGRAM_LIMIT_GOVERNANCE", "8")),
+    "Infrastructure & Tech": int(os.getenv("TELEGRAM_LIMIT_INFRA", "8")),
+    "Regulatory & Policy": int(os.getenv("TELEGRAM_LIMIT_REGULATORY", "12")),
+    "Macro & Market": int(os.getenv("TELEGRAM_LIMIT_MACRO", "10")),
+    "Market Structure": int(os.getenv("TELEGRAM_LIMIT_MARKET_STRUCTURE", "10")),
+    "Emerging Narratives": int(os.getenv("TELEGRAM_LIMIT_NARRATIVES", "8")),
+    "General": int(os.getenv("TELEGRAM_LIMIT_GENERAL", "6")),
 }
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
@@ -48,7 +86,22 @@ MINIFLUX_API_TOKEN = os.getenv("MINIFLUX_API_TOKEN", "")
 MINIFLUX_USERNAME = os.getenv("MINIFLUX_USERNAME", "")
 MINIFLUX_PASSWORD = os.getenv("MINIFLUX_PASSWORD", "")
 
-FEEDS = [
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# RSSHub adapter. When these URLs are imported into Miniflux running in the same
+# Docker Compose network, use RSSHUB_URL=http://rsshub:1200.
+RSSHUB_URL = os.getenv("RSSHUB_URL", "http://localhost:1200").rstrip("/")
+ENABLE_PANEWS = _env_flag("ENABLE_PANEWS", "0")
+ENABLE_REPLACEMENT_FEEDS = _env_flag("ENABLE_REPLACEMENT_FEEDS", "1")
+ENABLE_RSSHUB_FEEDS = _env_flag("ENABLE_RSSHUB_FEEDS", "0")
+ENABLE_FORESIGHT_API = _env_flag("ENABLE_FORESIGHT_API", "1")
+FORESIGHT_API_LIMIT = int(os.getenv("FORESIGHT_API_LIMIT", "50"))
+SOURCE_HISTORY_DB = os.getenv("SOURCE_HISTORY_DB", "data/source_history.sqlite3")
+
+CORE_FEEDS = [
     # English — Tier 1
     {"name": "CoinDesk",      "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
     {"name": "Cointelegraph", "url": "https://cointelegraph.com/rss"},
@@ -56,14 +109,217 @@ FEEDS = [
     {"name": "Decrypt",       "url": "https://decrypt.co/feed"},
     {"name": "Blockworks",    "url": "https://blockworks.co/feed"},
     {"name": "The Defiant",   "url": "https://thedefiant.io/feed"},
+    {"name": "Unchained",     "url": "https://unchainedcrypto.com/feed/"},
     # English — Tier 2
     {"name": "Forkast",       "url": "https://forkast.news/feed/"},
     {"name": "CryptoSlate",   "url": "https://cryptoslate.com/feed/"},
     {"name": "Investing.com", "url": "https://www.investing.com/rss/news_301.rss"},
     # Chinese
     {"name": "Wu Blockchain", "url": "https://wublock.substack.com/feed"},
-    {"name": "PANews",        "url": "https://www.panewslab.com/rss.xml"},
 ]
+
+PANEWS_FEED = {"name": "PANews", "url": "https://www.panewslab.com/rss.xml"}
+
+REPLACEMENT_FEEDS = [
+    {"name": "Odaily Newsflash", "url": "https://rss.odaily.news/rss/newsflash"},
+    {"name": "Odaily Articles",  "url": "https://rss.odaily.news/rss/post"},
+    {"name": "Chainalysis",      "url": "https://www.chainalysis.com/feed/"},
+    {"name": "Protos",           "url": "https://protos.com/feed/"},
+]
+
+RSSHUB_FEEDS = [
+    {"name": "ChainCatcher",  "url": f"{RSSHUB_URL}/chaincatcher/news"},
+    {"name": "TechFlow",      "url": f"{RSSHUB_URL}/techflowpost/express"},
+    {"name": "SlowMist",      "url": f"{RSSHUB_URL}/slowmist/research"},
+]
+
+FEEDS = CORE_FEEDS[:]
+if ENABLE_PANEWS:
+    FEEDS.append(PANEWS_FEED)
+if ENABLE_REPLACEMENT_FEEDS:
+    FEEDS.extend(REPLACEMENT_FEEDS)
+if ENABLE_RSSHUB_FEEDS:
+    FEEDS.extend(RSSHUB_FEEDS)
+
+
+DEFAULT_SOURCE_METADATA = {
+    "input_type": "media_news",
+    "source_tier": "tier_3",
+    "source_region": "global",
+    "source_focus": "broad_crypto",
+    "source_weight": 0.9,
+}
+
+SOURCE_METADATA = {
+    # English crypto-native media
+    "CoinDesk": {
+        "input_type": "media_news",
+        "source_tier": "tier_1",
+        "source_region": "global",
+        "source_focus": "broad_crypto",
+        "source_weight": 1.15,
+    },
+    "The Block": {
+        "input_type": "media_news",
+        "source_tier": "tier_1",
+        "source_region": "global",
+        "source_focus": "institutional",
+        "source_weight": 1.15,
+    },
+    "Blockworks": {
+        "input_type": "media_news",
+        "source_tier": "tier_1",
+        "source_region": "us",
+        "source_focus": "institutional",
+        "source_weight": 1.15,
+    },
+    "Decrypt": {
+        "input_type": "media_news",
+        "source_tier": "tier_2",
+        "source_region": "global",
+        "source_focus": "culture",
+        "source_weight": 1.0,
+    },
+    "The Defiant": {
+        "input_type": "media_news",
+        "source_tier": "tier_2",
+        "source_region": "global",
+        "source_focus": "defi",
+        "source_weight": 1.0,
+    },
+    "Unchained": {
+        "input_type": "media_news",
+        "source_tier": "tier_2",
+        "source_region": "us",
+        "source_focus": "broad_crypto",
+        "source_weight": 1.0,
+    },
+    "Cointelegraph": {
+        "input_type": "media_news",
+        "source_tier": "tier_3",
+        "source_region": "global",
+        "source_focus": "broad_crypto",
+        "source_weight": 0.9,
+    },
+    "CryptoSlate": {
+        "input_type": "media_news",
+        "source_tier": "tier_3",
+        "source_region": "global",
+        "source_focus": "market",
+        "source_weight": 0.9,
+    },
+    "Forkast": {
+        "input_type": "media_news",
+        "source_tier": "tier_3",
+        "source_region": "asia",
+        "source_focus": "regulatory",
+        "source_weight": 0.9,
+    },
+    "Investing.com": {
+        "input_type": "media_news",
+        "source_tier": "tier_3",
+        "source_region": "global",
+        "source_focus": "market",
+        "source_weight": 0.75,
+    },
+
+    # Chinese and Asia media
+    "Foresight News": {
+        "input_type": "media_news",
+        "source_tier": "tier_2",
+        "source_region": "china",
+        "source_focus": "broad_crypto",
+        "source_weight": 1.0,
+    },
+    "Wu Blockchain": {
+        "input_type": "media_news",
+        "source_tier": "tier_2",
+        "source_region": "asia",
+        "source_focus": "exchange",
+        "source_weight": 1.0,
+    },
+    "Odaily Newsflash": {
+        "input_type": "media_news",
+        "source_tier": "tier_3",
+        "source_region": "china",
+        "source_focus": "broad_crypto",
+        "source_weight": 0.9,
+    },
+    "Odaily Articles": {
+        "input_type": "media_news",
+        "source_tier": "tier_3",
+        "source_region": "china",
+        "source_focus": "broad_crypto",
+        "source_weight": 0.9,
+    },
+    "PANews": {
+        "input_type": "media_news",
+        "source_tier": "fallback",
+        "source_region": "china",
+        "source_focus": "broad_crypto",
+        "source_weight": 0.5,
+    },
+    "ChainCatcher": {
+        "input_type": "media_news",
+        "source_tier": "fallback",
+        "source_region": "china",
+        "source_focus": "broad_crypto",
+        "source_weight": 0.5,
+    },
+    "TechFlow": {
+        "input_type": "media_news",
+        "source_tier": "fallback",
+        "source_region": "china",
+        "source_focus": "broad_crypto",
+        "source_weight": 0.5,
+    },
+
+    # Specialist and security signals
+    "Protos": {
+        "input_type": "specialist_signal",
+        "source_tier": "tier_2",
+        "source_region": "global",
+        "source_focus": "security",
+        "source_weight": 1.1,
+    },
+    "Chainalysis": {
+        "input_type": "specialist_signal",
+        "source_tier": "tier_2",
+        "source_region": "global",
+        "source_focus": "regulatory",
+        "source_weight": 1.1,
+    },
+    "SlowMist": {
+        "input_type": "specialist_signal",
+        "source_tier": "tier_2",
+        "source_region": "asia",
+        "source_focus": "security",
+        "source_weight": 1.1,
+    },
+
+    # First-party exchange announcements
+    "Binance": {
+        "input_type": "official_announcement",
+        "source_tier": "tier_2",
+        "source_region": "global",
+        "source_focus": "exchange",
+        "source_weight": 1.05,
+    },
+    "OKX": {
+        "input_type": "official_announcement",
+        "source_tier": "tier_2",
+        "source_region": "global",
+        "source_focus": "exchange",
+        "source_weight": 1.05,
+    },
+    "Bybit": {
+        "input_type": "official_announcement",
+        "source_tier": "tier_2",
+        "source_region": "global",
+        "source_focus": "exchange",
+        "source_weight": 1.05,
+    },
+}
 
 TOPICS = {
     "Portfolio": [
@@ -118,6 +374,30 @@ TOPICS = {
         "cross-chain", "bridge", "developer tool", "sdk",
         "solana", "arbitrum", "optimism", "base", "sui", "aptos",
     ],
+    "Security & Exploits": [
+        "hack", "hacked", "exploit", "exploited", "vulnerability", "bug",
+        "stolen", "drained", "phishing", "scam", "fraud", "compromised",
+        "private key", "multisig", "lazarus", "north korea", "freeze",
+        "frozen", "seized", "security incident", "attack", "attacker",
+        "被盗", "攻击", "漏洞", "黑客", "钓鱼", "私钥", "冻结", "安全事件",
+    ],
+    "Stablecoins & Payments": [
+        "stablecoin", "stablecoins", "usdt", "usdc", "usde", "usdd",
+        "tether", "circle", "payments", "payment", "remittance",
+        "cross-border payment", "x402", "pay", "checkout", "merchant",
+        "稳定币", "支付", "跨境支付", "汇款",
+    ],
+    "Governance & Protocol Updates": [
+        "governance", "proposal", "vote", "dao", "aip", "upgrade",
+        "roadmap", "protocol update", "foundation", "grant", "grants",
+        "token unlock", "unlocking", "治理", "提案", "投票", "升级", "基金会",
+    ],
+    "Market Structure": [
+        "market structure", "derivatives", "options", "futures", "perpetual",
+        "volatility", "clearing", "custody", "trust charter", "occ charter",
+        "broker", "dealer", "prediction market", "exchange-traded",
+        "期权", "衍生品", "永续", "波动率", "托管", "预测市场",
+    ],
     "RWA & Institutional": [
         "real world asset", "rwa", "tokenized", "tokenization", "tokenised",
         "on-chain treasury", "tokenized bond", "tokenized fund",
@@ -158,6 +438,10 @@ TOPIC_EMOJI = {
     "Exchange Listings":     "📋",
     "Deal Flow & Funding":   "💰",
     "Infrastructure & Tech": "⚙️",
+    "Security & Exploits":   "🚨",
+    "Stablecoins & Payments":"💵",
+    "Governance & Protocol Updates": "🗳️",
+    "Market Structure":      "🏗️",
     "RWA & Institutional":   "🏦",
     "DeFi & New Primitives": "🔁",
     "Regulatory & Policy":   "⚖️",

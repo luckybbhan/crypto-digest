@@ -15,8 +15,9 @@ Target flow:
 ```text
 Miniflux polls RSS feeds every 15-30 minutes
 -> Miniflux stores and deduplicates entries
--> digest.py reads last 24h entries from Miniflux
--> digest.py still fetches exchange announcements directly
+-> source_collector.py polls non-RSS sources into SQLite
+-> digest.py reads last 24h RSS entries from Miniflux
+-> digest.py reads last 24h non-RSS entries from SQLite
 -> Telegram/Telegraph output
 ```
 
@@ -27,6 +28,9 @@ Start Miniflux and Postgres:
 ```bash
 docker compose -f docker-compose.miniflux.yml up -d
 ```
+
+This Compose file also starts a private RSSHub adapter on `127.0.0.1:1200`.
+RSSHub is optional; it is only used when `ENABLE_RSSHUB_FEEDS=1`.
 
 Open Miniflux:
 
@@ -82,6 +86,14 @@ Create any missing RSS feeds from `config.py`:
 python3 miniflux_client.py --ensure-feeds
 ```
 
+To import RSSHub-backed feeds into Miniflux, use Docker's internal service name:
+
+```bash
+ENABLE_RSSHUB_FEEDS=1 RSSHUB_URL=http://rsshub:1200 python3 miniflux_client.py --ensure-feeds
+```
+
+See `RSSHUB_SETUP.md` for source replacement tests.
+
 Ask Miniflux to refresh all feeds:
 
 ```bash
@@ -92,6 +104,44 @@ Check feed count and last-24h entry count:
 
 ```bash
 python3 miniflux_client.py --check
+```
+
+## Collect Non-RSS Sources
+
+Miniflux only stores RSS feeds. `Foresight News`, `Binance`, `OKX`, and `Bybit`
+are fetched through direct adapters, so they need a small local history store to
+avoid missing items when those APIs only return the latest page.
+
+Collect all non-RSS sources into SQLite:
+
+```bash
+python3 source_collector.py
+```
+
+Check local non-RSS history:
+
+```bash
+python3 source_history.py --hours 24
+```
+
+Useful collector modes:
+
+```bash
+python3 source_collector.py --foresight-only
+python3 source_collector.py --exchange-only
+python3 source_collector.py --json
+```
+
+The default DB path is:
+
+```text
+data/source_history.sqlite3
+```
+
+Override with `.env` if needed:
+
+```bash
+SOURCE_HISTORY_DB=data/source_history.sqlite3
 ```
 
 ## Run Digest From Miniflux
@@ -122,7 +172,14 @@ python3 digest.py --source miniflux --telegraph
 
 ## VPS Cron Shape
 
-Miniflux handles RSS polling internally, so cron only needs to run the digest.
+Miniflux handles RSS polling internally. Cron should run the non-RSS collector
+frequently and the digest once a day.
+
+Example collector cron, every 10 minutes:
+
+```cron
+*/10 * * * * cd /path/to/crypto-digest && /path/to/.venv/bin/python source_collector.py >> logs/source_collector.log 2>&1
+```
 
 Example daily test run:
 
@@ -135,8 +192,11 @@ Keep Miniflux running continuously with Docker Compose or systemd.
 ## Notes
 
 - Miniflux only replaces the RSS collection layer.
-- Exchange announcement APIs are still fetched directly by `digest.py`.
+- `Foresight News`, `Binance`, `OKX`, and `Bybit` are stored by
+  `source_collector.py` and read by `digest.py --source miniflux`.
 - If Miniflux has just been installed, wait for one or more polling cycles before
   expecting complete 24h coverage.
+- If `source_collector.py` has just been installed, wait for several collector
+  runs before expecting complete non-RSS 24h coverage.
 - The current Compose file uses a 30-minute polling scheduler and a 15-minute
   minimum interval for high-frequency feeds.

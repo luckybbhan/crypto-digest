@@ -14,6 +14,20 @@ Build a daily crypto digest that is:
 - Opinionated enough to prioritize what matters.
 - Differentiated through portfolio, watchlist, and investment-context relevance.
 
+## Current Focus
+
+The current optimization focus is source quality and ranking. See
+`SOURCE_RESEARCH_REPORT.md` for the selected source universe and
+`SOURCE_QUALITY_OPTIMIZATION_PLAN.md` for the next development workflow.
+
+Immediate order:
+
+1. Collect one full 24h sample from the selected V1 sources.
+2. Review source-level input quality.
+3. Add explicit source metadata and input types.
+4. Tune relevance, category taxonomy, clustering, and scoring.
+5. Improve takeaways only after the candidate stories are trusted.
+
 ## Core System Variables
 
 ### 1. Source Coverage
