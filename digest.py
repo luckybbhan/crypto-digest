@@ -506,6 +506,104 @@ PROMOTIONAL_PATTERNS = [
     r"\b瓜分\b",
 ]
 
+SOURCE_HARD_DROP_PATTERNS = [
+    r"星球(?:早|午|晚)讯",
+    r"24H热门币种与要闻",
+    r"热门交互合集",
+    r"TOP10 crypto news",
+    r"weekly top10 crypto news",
+    r"weekly project updates",
+    r"未来(?:12个月|24小时).*重返历史高点",
+    r"外星人存在",
+    r"汉坦病毒",
+    r"Polymarket.*访华",
+    r"预测市场完成.*功能升级",
+    r"Bitget.*IPO Prime.*OpenAI",
+    r"BitMart.*BM发现",
+    r"Strategy.*软件业务",
+    r"NBA季后赛",
+    r"中韩半导体ETF",
+    r"沪深两市",
+    r"沪指",
+    r"KOSPI",
+    r"日本国债收益率",
+    r"海外投资者美股",
+    r"印度总理.*黄金",
+    r"WTI原油",
+    r"沙特阿美",
+    r"伊朗.*(?:回应|提案|战争|海峡|军方|领袖|官员)",
+    r"美国能源部长",
+    r"特朗普下令.*买美国货",
+    r"黄仁勋",
+    r"腾讯云",
+    r"阿里千问",
+    r"OpenAI放开员工售股",
+    r"Sam Altman",
+    r"陈茂波.*AI",
+    r"AI现在仍未到",
+    r"Cerebras",
+    r"Scale AI",
+    r"CoreWeave",
+]
+
+SOURCE_MARKET_NOISE_PATTERNS = [
+    r"(?:ETH|SOL|BSC|BTC|[A-Z0-9]{2,12})链生态代币.*(?:市值突破|日内涨超)",
+    r"Meme币.*(?:上涨|市值突破|日内涨超)",
+    r"日内涨超\d+(?:倍|%)",
+    r"BTC突破\d",
+    r"BTC升破\d",
+    r"比特币(?:突破|升破|市值突破)",
+    r"加密市场普涨",
+    r"恐慌贪婪指数",
+    r"分析[：:].*(?:比特币|BTC|ETH).*(?:回调|下行|牛市|反弹|关键防线|算力|均线)",
+    r"分析师[：:].*(?:BTC|比特币|ETH).*(?:增持|建仓|预测|下行|高点)",
+    r"巨鲸.*(?:开设|做多|做空|清仓|平仓|浮盈|浮亏|充值|提取|转移|质押|兑换|存入)",
+    r"聪明钱数据",
+    r"新建钱包.*(?:提取|购入)",
+    r"沉寂超\d+年地址被激活",
+    r"Tracker信息.*(?:披露|增持)",
+    r"地板价.*(?:翻倍|回暖)",
+    r"(?:地址|团队|关联地址|BIT|TRUMP).*?(?:提取|转移|充值).*?(?:ETH|BTC|代币|LAB|PAXG)",
+    r"某鲸鱼.*Tornado Cash",
+    r"Aster上线.*热门港股",
+    r"分析师.*(?:算力|链上结构|均线)",
+]
+
+SOURCE_ALLOW_PATTERNS = [
+    r"CLARITY Act",
+    r"GENIUS法案",
+    r"SEC",
+    r"CFTC",
+    r"监管",
+    r"牌照",
+    r"许可证",
+    r"法院",
+    r"起诉",
+    r"移送公安",
+    r"查缉逃税",
+    r"国税厅",
+    r"现货ETF.*(?:净流入|净流出)",
+    r"ETF.*(?:净流入|净流出)",
+    r"代币化",
+    r"国债.*上链",
+    r"稳定币",
+    r"加密支付",
+    r"支付.*政府服务",
+    r"跨境",
+    r"融资",
+    r"估值",
+    r"Canton Network",
+    r"TON",
+    r"Telegram.*TON",
+    r"桥接安全事件",
+    r"安全事件",
+    r"漏洞",
+    r"攻击",
+    r"被盗",
+    r"补偿",
+    r"赔付",
+]
+
 IMPORTANT_SIGNAL_PATTERNS = {
     "high": [
         r"\braises?\b", r"\braised\b", r"\bfunding\b", r"\bseed\b", r"\bseries [ab]\b",
@@ -566,6 +664,33 @@ def is_hard_drop_article(article: dict) -> bool:
 def is_promotional_article(article: dict) -> bool:
     text = _combined_text(article).lower()
     return any(re.search(pattern, text) for pattern in PROMOTIONAL_PATTERNS)
+
+
+def has_source_allow_signal(article: dict) -> bool:
+    text = _combined_text(article)
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in SOURCE_ALLOW_PATTERNS)
+
+
+def source_quality_override(article: dict):
+    """Apply stricter rules to high-volume sources with lots of market noise."""
+    source = article.get("source", "")
+    if source not in {"Odaily Newsflash", "Odaily Articles", "Wu Blockchain", "Foresight News"}:
+        return None
+
+    text = _combined_text(article)
+    if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in SOURCE_HARD_DROP_PATTERNS):
+        return "drop", "source_specific_noise"
+
+    if has_source_allow_signal(article):
+        return None
+
+    if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in SOURCE_MARKET_NOISE_PATTERNS):
+        return "demote", "source_market_noise"
+
+    if source == "Odaily Articles" and is_opinion_article(article):
+        return "demote", "source_opinion"
+
+    return None
 
 
 def is_crypto_relevant(article: dict) -> bool:
@@ -703,10 +828,15 @@ def normalize_classification(article: dict, topics: list[str]) -> list[str]:
 
 
 def classify_quality(article: dict) -> tuple[str, str]:
-    if not is_crypto_relevant(article):
+    source_override = source_quality_override(article)
+    if source_override and source_override[0] == "drop":
+        return source_override
+    if not is_crypto_relevant(article) and not has_source_allow_signal(article):
         return "drop", "weak_crypto_relevance"
     if is_hard_drop_article(article):
         return "drop", "roundup_or_offtopic"
+    if source_override:
+        return source_override
     if is_promotional_article(article) and not is_true_exchange_listing(article) and not has_strong_relevance_signal(article):
         return "drop", "promotional"
     if is_press_release(article) and not has_strong_relevance_signal(article):

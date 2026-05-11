@@ -41,6 +41,7 @@ ensure_env "RSSHUB_URL" "http://rsshub:1200"
 ensure_env "ENABLE_RSSHUB_FEEDS" "1"
 ensure_env "ENABLE_REPLACEMENT_FEEDS" "1"
 ensure_env "ENABLE_FORESIGHT_API" "1"
+ensure_env "MINIFLUX_USER_AGENT" "Mozilla/5.0 (compatible; crypto-digest/1.0)"
 chmod 600 .env
 
 if [[ ! -d .venv ]]; then

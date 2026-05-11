@@ -29,6 +29,8 @@ services:
       POLLING_SCHEDULER: entry_frequency
       SCHEDULER_ENTRY_FREQUENCY_MIN_INTERVAL: ${MINIFLUX_MIN_INTERVAL:-15}
       SCHEDULER_ENTRY_FREQUENCY_MAX_INTERVAL: ${MINIFLUX_MAX_INTERVAL:-1440}
+      FETCHER_ALLOW_PRIVATE_NETWORKS: "1"
+      HTTP_CLIENT_USER_AGENT: ${MINIFLUX_USER_AGENT:-Mozilla/5.0 (compatible; crypto-digest/1.0)}
     healthcheck:
       test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
       interval: 10s
