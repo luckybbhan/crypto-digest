@@ -226,10 +226,10 @@ SOURCE_METADATA = {
     # Chinese and Asia media
     "Foresight News": {
         "input_type": "media_news",
-        "source_tier": "tier_2",
+        "source_tier": "tier_1",
         "source_region": "china",
         "source_focus": "broad_crypto",
-        "source_weight": 1.0,
+        "source_weight": 1.1,
     },
     "Wu Blockchain": {
         "input_type": "media_news",
@@ -243,14 +243,14 @@ SOURCE_METADATA = {
         "source_tier": "tier_3",
         "source_region": "china",
         "source_focus": "broad_crypto",
-        "source_weight": 0.9,
+        "source_weight": 0.65,
     },
     "Odaily Articles": {
         "input_type": "media_news",
         "source_tier": "tier_3",
         "source_region": "china",
         "source_focus": "broad_crypto",
-        "source_weight": 0.9,
+        "source_weight": 0.75,
     },
     "PANews": {
         "input_type": "media_news",

@@ -79,6 +79,22 @@ TOPIC_SCORE_WEIGHTS = {
     "General": -1,
 }
 
+SOURCE_TIER_SCORE_WEIGHTS = {
+    "tier_1": 3,
+    "tier_2": 1,
+    "tier_3": -1,
+    "fallback": -2,
+}
+
+TELEGRAM_SUPPLEMENTAL_SOURCES = {
+    "Odaily Newsflash",
+    "Odaily Articles",
+    "PANews",
+    "ChainCatcher",
+    "TechFlow",
+}
+TELEGRAM_SUPPLEMENTAL_TOPIC_CAP = 0
+
 TOPIC_DISPLAY_NAME = {
     "Portfolio": "投资组合",
     "Exchange Listings": "交易所上线",
@@ -987,6 +1003,10 @@ def score_article_components(article: dict) -> list[dict]:
 
     if article["source"] in {"The Block", "CoinDesk", "Cointelegraph"}:
         components.append(_score_component("legacy_source_bonus", 1, "Legacy priority source"))
+    source_tier = article.get("source_tier", "tier_3")
+    source_tier_adjustment = SOURCE_TIER_SCORE_WEIGHTS.get(source_tier, -1)
+    if source_tier_adjustment:
+        components.append(_score_component("source_tier", source_tier_adjustment, f"Configured source tier {source_tier}"))
     source_weight = float(article.get("source_weight", 1.0))
     source_weight_adjustment = round((source_weight - 1.0) * 4)
     if source_weight_adjustment:
@@ -1958,6 +1978,32 @@ def article_rank_score(article: dict) -> int:
     return article.get("story_score", article.get("importance_score", 0))
 
 
+def _is_telegram_supplemental_source(article: dict) -> bool:
+    return article.get("source") in TELEGRAM_SUPPLEMENTAL_SOURCES
+
+
+def _balance_telegram_sources(sorted_articles: list[dict], limit: int) -> list[dict]:
+    """Keep supplemental feeds from crowding out primary sources in Telegram."""
+    if limit <= 0:
+        return sorted_articles
+    candidates = sorted_articles[:]
+    if not any(not _is_telegram_supplemental_source(article) for article in candidates):
+        return candidates[:limit]
+
+    selected = []
+    supplemental_count = 0
+    for article in candidates:
+        if len(selected) >= limit:
+            break
+        if _is_telegram_supplemental_source(article):
+            if supplemental_count >= TELEGRAM_SUPPLEMENTAL_TOPIC_CAP:
+                continue
+            supplemental_count += 1
+        selected.append(article)
+
+    return selected
+
+
 def group_articles_by_topic(articles: list[dict]) -> dict[str, list[dict]]:
     by_topic = defaultdict(list)
     for article in articles:
@@ -1981,7 +2027,8 @@ def telegram_articles_for_topic(topic: str, articles: list[dict]):
     limit = TELEGRAM_TOPIC_LIMITS.get(topic, TELEGRAM_DEFAULT_TOPIC_LIMIT)
     if limit <= 0:
         return sorted_articles, 0
-    return sorted_articles[:limit], max(len(sorted_articles) - limit, 0)
+    balanced_articles = _balance_telegram_sources(sorted_articles, limit)
+    return balanced_articles, max(len(sorted_articles) - len(balanced_articles), 0)
 
 
 def main():
