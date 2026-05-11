@@ -21,6 +21,7 @@ from digest import (
     collect_articles,
     filter_articles_by_hours,
     group_articles_by_topic,
+    localize_articles_for_telegram,
     render_header,
     render_topic_section,
     score_articles,
@@ -51,8 +52,10 @@ def _json_article(article: dict) -> dict:
         "quality_action": article.get("quality_action"),
         "quality_reason": article.get("quality_reason"),
         "title": article["title"],
+        "display_title": article.get("display_title"),
         "link": article["link"],
         "summary": article["summary"],
+        "display_summary": article.get("display_summary"),
         "published_utc": published.astimezone(timezone.utc).isoformat(),
         "published_utc8": published.astimezone(TZ_CST).isoformat(),
         "topics": article.get("topics", []),
@@ -560,6 +563,17 @@ def main() -> None:
     priority = ["Portfolio", "Exchange Listings"]
     rest = [topic for topic in by_topic if topic not in priority and topic != "General"]
     topic_order = priority + sorted(rest) + ["General"]
+    telegram_visible_articles = []
+    seen_telegram_articles = set()
+    for topic, articles in by_topic.items():
+        visible, _ = telegram_articles_for_topic(topic, articles)
+        for article in visible:
+            key = article.get("story_id") or article.get("link") or article.get("title")
+            if key in seen_telegram_articles:
+                continue
+            seen_telegram_articles.add(key)
+            telegram_visible_articles.append(article)
+    localize_articles_for_telegram(telegram_visible_articles)
     write_telegram_preview(run_dir / "telegram_preview.md", topic_order, by_topic)
     if args.with_takeaways:
         executive_summary = summarize_digest(stories)

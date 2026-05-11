@@ -79,6 +79,23 @@ TOPIC_SCORE_WEIGHTS = {
     "General": -1,
 }
 
+TOPIC_DISPLAY_NAME = {
+    "Portfolio": "投资组合",
+    "Exchange Listings": "交易所上线",
+    "Deal Flow & Funding": "融资与交易",
+    "Infrastructure & Tech": "基础设施与技术",
+    "Security & Exploits": "安全事件",
+    "Stablecoins & Payments": "稳定币与支付",
+    "Governance & Protocol Updates": "治理与协议更新",
+    "Market Structure": "市场结构",
+    "RWA & Institutional": "RWA 与机构",
+    "DeFi & New Primitives": "DeFi 与新机制",
+    "Regulatory & Policy": "监管与政策",
+    "Macro & Market": "宏观与市场",
+    "Emerging Narratives": "新叙事",
+    "General": "综合",
+}
+
 PROTOCOL_SECURITY_PATTERNS = [
     r"\bhack(?:ed)?\b",
     r"\bexploit(?:ed)?\b",
@@ -1490,6 +1507,92 @@ def summarize_digest(stories: list[dict], max_stories: int = 10) -> str:
         return ""
 
 
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
+def _needs_chinese_localization(article: dict) -> bool:
+    title = article.get("title") or ""
+    summary = article.get("story_summary") or article.get("summary") or ""
+    if not title.strip():
+        return False
+    if _contains_cjk(title) and (not summary or _contains_cjk(summary)):
+        return False
+    return True
+
+
+def _localize_batch_for_telegram(articles: list[dict]) -> dict[int, dict]:
+    if not DEEPSEEK_API_KEY or not articles:
+        return {}
+
+    items = []
+    for idx, article in enumerate(articles, 1):
+        summary = article.get("story_summary") or article.get("summary") or ""
+        items.append(
+            f"{idx}. Source: {article['source']}\n"
+            f"Title: {article['title']}\n"
+            f"Summary: {summary}"
+        )
+    prompt = (
+        "把下面的加密新闻标题和摘要翻译/改写成适合 Telegram 阅读的简体中文。\n"
+        "Rules:\n"
+        "- 只翻译 SOURCE DATA 中已有信息，不补充背景，不编造数字、日期或动作。\n"
+        "- title 用简洁中文，保留项目名、公司名、token ticker、法案名。\n"
+        "- summary 用 1 句中文说明事实；如果原文没有摘要，可返回空字符串。\n"
+        "- 不要使用 Markdown，不要加项目符号。\n"
+        "- 输出严格 JSON 数组，每项格式: {\"id\": 1, \"title\": \"...\", \"summary\": \"...\"}\n\n"
+        f"SOURCE DATA:\n{chr(10).join(items)}"
+    )
+    try:
+        response = httpx.post(
+            DEEPSEEK_URL,
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "max_tokens": 1800,
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"].strip()
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
+        rows = json.loads(content)
+        localized = {}
+        for row in rows:
+            try:
+                item_id = int(row.get("id"))
+            except (TypeError, ValueError):
+                continue
+            title = (row.get("title") or "").strip()
+            summary = (row.get("summary") or "").strip()
+            if title:
+                localized[item_id] = {"title": title, "summary": summary}
+        return localized
+    except Exception as e:
+        log.warning(f"Telegram Chinese localization failed: {e}")
+        return {}
+
+
+def localize_articles_for_telegram(articles: list[dict], batch_size: int = 12) -> None:
+    """Attach Chinese display fields used only by Telegram rendering."""
+    targets = [article for article in articles if _needs_chinese_localization(article)]
+    if not targets:
+        return
+
+    log.info(f"  Localizing {len(targets)} Telegram articles to Chinese…")
+    for start in range(0, len(targets), batch_size):
+        batch = targets[start:start + batch_size]
+        translations = _localize_batch_for_telegram(batch)
+        for idx, article in enumerate(batch, 1):
+            translated = translations.get(idx)
+            if not translated:
+                continue
+            article["display_title"] = translated["title"]
+            article["display_summary"] = translated.get("summary", "")
+
+
 # ---------------------------------------------------------------------------
 # Render Telegram messages
 # ---------------------------------------------------------------------------
@@ -1501,11 +1604,11 @@ def _escape(text: str) -> str:
 
 def render_header(now: datetime, total: int, sources: int) -> str:
     now_cst = now.astimezone(TZ_CST)
-    date_str = now_cst.strftime("%b %d, %Y")
+    date_str = f"{now_cst.year}年{now_cst.month}月{now_cst.day}日"
     time_str = now_cst.strftime("%H:%M UTC+8")
     return (
-        f"📰 *Crypto Daily Digest — {date_str}*\n"
-        f"_{sources} sources · {total} articles · {time_str}_"
+        f"📰 *加密日报 — {date_str}*\n"
+        f"_{sources} 个来源 · {total} 条新闻 · {time_str}_"
     )
 
 
@@ -1515,8 +1618,9 @@ def render_topic_section(topic: str, articles: list[dict], total_count=None) -> 
     Each string is ≤4096 chars (Telegram's limit).
     """
     emoji = TOPIC_EMOJI.get(topic, "📌")
-    count_text = f"{len(articles)} articles" if total_count is None or total_count == len(articles) else f"top {len(articles)} of {total_count} articles"
-    header = f"{emoji} *{_escape(topic)}*  ({count_text})\n"
+    topic_label = TOPIC_DISPLAY_NAME.get(topic, topic)
+    count_text = f"{len(articles)} 条" if total_count is None or total_count == len(articles) else f"前 {len(articles)} / 共 {total_count} 条"
+    header = f"{emoji} *{_escape(topic_label)}*  ({count_text})\n"
 
     messages = []
     current = header
@@ -1525,9 +1629,11 @@ def render_topic_section(topic: str, articles: list[dict], total_count=None) -> 
         pub = a["published"].astimezone(TZ_CST).strftime("%b %d, %H:%M UTC+8")
         source = _escape(a["source"])
         supporting = a.get("supporting_sources", [])
-        source_line = source if not supporting else f"{source} + {len(supporting)} sources"
-        title = _escape(a["title"])
-        display_summary = a.get("story_summary") or a.get("summary") or ""
+        source_line = source if not supporting else f"{source} + {len(supporting)} 个来源"
+        title = _escape(a.get("display_title") or a["title"])
+        display_summary = a.get("display_summary")
+        if display_summary is None:
+            display_summary = a.get("story_summary") or a.get("summary") or ""
         summary = f"{_escape(display_summary)}\n" if display_summary else ""
         link = a["link"]
 
@@ -1535,7 +1641,7 @@ def render_topic_section(topic: str, articles: list[dict], total_count=None) -> 
 
         if len(current) + len(block) > 4000:
             messages.append(current)
-            current = f"{emoji} *{_escape(topic)}* (cont.)\n" + block
+            current = f"{emoji} *{_escape(topic_label)}*（续）\n" + block
         else:
             current += block
 
@@ -1912,6 +2018,17 @@ def main():
     annotate_story_scores(stories)
     by_topic = group_articles_by_topic(all_articles)
     executive_summary = summarize_digest(stories)
+    telegram_visible_articles = []
+    seen_telegram_articles = set()
+    for topic, articles in by_topic.items():
+        visible, _ = telegram_articles_for_topic(topic, articles)
+        for article in visible:
+            key = article.get("story_id") or article.get("link") or article.get("title")
+            if key in seen_telegram_articles:
+                continue
+            seen_telegram_articles.add(key)
+            telegram_visible_articles.append(article)
+    localize_articles_for_telegram(telegram_visible_articles)
 
     # Post to Telegram
     if not TELEGRAM_BOT_TOKEN and not args.dry_run:
