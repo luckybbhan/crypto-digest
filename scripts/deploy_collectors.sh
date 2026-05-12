@@ -86,6 +86,7 @@ collector_cmd="cd $ROOT_DIR && . .venv/bin/activate && python3 source_collector.
 refresh_cmd="cd $ROOT_DIR && . .venv/bin/activate && python3 miniflux_client.py --refresh >> logs/miniflux_refresh.log 2>&1"
 snapshot_cmd="cd $ROOT_DIR && . .venv/bin/activate && python3 daily_source_snapshot.py --source miniflux --hours 24 >> logs/daily_source_snapshot.log 2>&1"
 digest_cmd="cd $ROOT_DIR && . .venv/bin/activate && python3 digest.py --source miniflux --prod >> logs/daily_digest.log 2>&1"
+review_cmd="cd $ROOT_DIR && . .venv/bin/activate && python3 daily_review_export.py >> logs/daily_review_export.log 2>&1"
 tmp_cron="$(mktemp)"
 crontab -l 2>/dev/null | awk "
   /^${begin_marker}$/ {skip=1; next}
@@ -101,6 +102,7 @@ crontab -l 2>/dev/null | awk "
   printf '52 0 * * * %s\n' "$collector_cmd"
   printf '55 0 * * * %s\n' "$snapshot_cmd"
   printf '0 1 * * * %s\n' "$digest_cmd"
+  printf '10 1 * * * %s\n' "$review_cmd"
   printf '%s\n' "$end_marker"
 } | crontab -
 rm -f "$tmp_cron"
@@ -116,3 +118,4 @@ echo "  cd $ROOT_DIR && source .venv/bin/activate && python3 debug_pipeline.py -
 echo "Daily source snapshots are written to:"
 echo "  $ROOT_DIR/exports/source_snapshots/latest"
 echo "Daily Telegram digest is scheduled at 09:00 Asia/Shanghai (01:00 UTC) to the production group/topic threads."
+echo "Daily human-review tables are scheduled at 09:10 Asia/Shanghai (01:10 UTC)."
